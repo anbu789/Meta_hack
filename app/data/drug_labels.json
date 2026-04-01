@@ -1,0 +1,96 @@
+{
+  "Clarithromycin": {
+    "drug_class": "Macrolide antibiotic",
+    "labeled_adverse_events": [
+      "nausea",
+      "vomiting",
+      "diarrhea",
+      "abdominal pain",
+      "headache",
+      "rash",
+      "dysgeusia",
+      "insomnia",
+      "hepatotoxicity",
+      "Clostridioides difficile colitis"
+    ],
+    "contraindications": [
+      "known hypersensitivity to macrolides",
+      "concomitant use with ergotamine",
+      "history of cholestatic jaundice with prior clarithromycin use"
+    ],
+    "notes": "QT prolongation is NOT listed as a labeled adverse event for this drug. Any QT prolongation event should be classified as unexpected."
+  },
+  "Amiodarone": {
+    "drug_class": "Class III antiarrhythmic",
+    "labeled_adverse_events": [
+      "QT prolongation",
+      "torsades de pointes",
+      "bradycardia",
+      "hypotension",
+      "pulmonary toxicity",
+      "hepatotoxicity",
+      "thyroid dysfunction",
+      "photosensitivity",
+      "corneal microdeposits",
+      "peripheral neuropathy",
+      "nausea",
+      "vomiting"
+    ],
+    "contraindications": [
+      "sinus node dysfunction",
+      "second or third degree AV block",
+      "cardiogenic shock"
+    ],
+    "notes": "QT prolongation is a well-known, labeled adverse event. Any QT prolongation event in an Amiodarone patient should be classified as expected."
+  },
+  "Azithromycin": {
+    "drug_class": "Macrolide antibiotic",
+    "labeled_adverse_events": [
+      "nausea",
+      "vomiting",
+      "diarrhea",
+      "abdominal pain",
+      "rash",
+      "hepatotoxicity",
+      "Clostridioides difficile colitis"
+    ],
+    "contraindications": [
+      "known hypersensitivity to macrolides or ketolides",
+      "history of cholestatic jaundice with prior azithromycin use"
+    ],
+    "notes": "QT prolongation is NOT listed as a labeled adverse event for this drug. Any QT prolongation event should be classified as unexpected. This is the masked drug in Task 3."
+  },
+  "DrugX": {
+    "drug_class": "Synthetic small molecule (Task 2 placeholder)",
+    "labeled_adverse_events": [
+      "nausea",
+      "fatigue",
+      "headache",
+      "rash"
+    ],
+    "contraindications": [],
+    "notes": "hepatotoxicity is NOT a labeled adverse event. Used as the true signal drug in Task 2."
+  },
+  "DrugY": {
+    "drug_class": "Synthetic small molecule (Task 2 placeholder)",
+    "labeled_adverse_events": [
+      "rash",
+      "pruritus",
+      "urticaria",
+      "nausea"
+    ],
+    "contraindications": [],
+    "notes": "Rash is a labeled adverse event. DrugY-rash is a non-signal in Task 2."
+  },
+  "DrugZ": {
+    "drug_class": "Synthetic small molecule (Task 2 placeholder)",
+    "labeled_adverse_events": [
+      "nausea",
+      "vomiting",
+      "diarrhea",
+      "fatigue"
+    ],
+    "contraindications": [],
+    "notes": "Nausea is a labeled adverse event. DrugZ-nausea is a non-signal in Task 2."
+  }
+}

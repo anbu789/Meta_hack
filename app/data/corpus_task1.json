@@ -1,0 +1,17 @@
+[
+  {
+    "report_id": "ADE-2024-00412",
+    "drug_name": "Clarithromycin",
+    "drug_dose_mg": 500.0,
+    "patient_age": 34,
+    "patient_sex": "M",
+    "adverse_event": "QT prolongation with syncope",
+    "onset_days": 3,
+    "severity": "Serious",
+    "outcome": "Recovered",
+    "concomitant_drugs": [],
+    "narrative": "A 34-year-old male with no prior cardiac history was prescribed Clarithromycin 500mg twice daily for a respiratory tract infection. On day 3 of treatment, the patient presented to the emergency department following a syncopal episode at home. ECG on arrival showed a QTc interval of 520ms (normal <450ms in males). Troponin was negative. The patient was monitored overnight, Clarithromycin was discontinued, and QTc normalized to 430ms within 48 hours. No prior history of cardiac arrhythmia, electrolyte disturbance, or family history of sudden cardiac death. No other medications were being taken at the time of the event.",
+    "country": "India",
+    "report_date": "2024-03-15"
+  }
+]
