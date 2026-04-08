@@ -1,0 +1,29 @@
+[project]
+name = "pharmavigil"
+version = "1.0.0"
+description = "PharmaVigil — OpenEnv Pharmacovigilance Signal Detection Environment"
+authors = [
+    {name = "Anbuselvan Murugesan"}
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "pydantic>=2.0.0",
+    "requests>=2.31.0",
+    "httpx>=0.27.0",
+    "openai>=1.0.0",
+    "torch>=2.2.0",
+    "transformers>=4.40.0",
+    "numpy>=1.26.0",
+    "scipy>=1.12.0",
+    "python-dotenv>=1.0.0",
+    "anthropic>=0.25.0",
+    "openenv-core>=0.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends.legacy:build"
+[project.scripts]
+server = "server.app:main"

@@ -1,7 +1,6 @@
 import json
 from app.models import Action
 
-# Ground truth — do not modify
 GROUND_TRUTH = {
     "correct_severity": "Serious",
     "correct_unexpected": True,
@@ -9,19 +8,10 @@ GROUND_TRUTH = {
     "correct_meddra_soc": "Cardiac disorders"
 }
 
-# Accepted aliases for MedDRA SOC (case-insensitive)
-MEDDRA_SOC_ALIASES = [
-    "cardiac disorders",
-    "cardiac disorder"
-]
+MEDDRA_SOC_ALIASES = ["cardiac disorders", "cardiac disorder"]
 
 
 def _parse_classification(action: dict) -> dict | None:
-    """
-    Extract the classification dict from the action.
-    Accepts either a dict or a JSON string in action['classification'].
-    Returns None if unparseable.
-    """
     raw = action.get("classification")
     if raw is None:
         return None
@@ -51,7 +41,6 @@ def _check_unexpected(classification: dict) -> tuple[float, str]:
         agent_val = raw.strip().lower() in ("true", "yes", "1")
     else:
         return 0.0, f"Unexpected field missing or unparseable: got '{raw}'"
-
     expected = GROUND_TRUTH["correct_unexpected"]
     if agent_val == expected:
         return 0.25, f"Unexpected classification correct: {agent_val}"
@@ -66,7 +55,6 @@ def _check_expedited(classification: dict) -> tuple[float, str]:
         agent_val = raw.strip().lower() in ("true", "yes", "1")
     else:
         return 0.0, f"Expedited report field missing or unparseable: got '{raw}'"
-
     expected = GROUND_TRUTH["correct_expedited_flag"]
     if agent_val == expected:
         return 0.25, f"Expedited report flag correct: {agent_val}"
@@ -84,20 +72,6 @@ def _check_meddra_soc(classification: dict) -> tuple[float, str]:
 
 
 def grade_task1(action: dict) -> dict:
-    """
-    Grade a Task 1 classify action.
-
-    Args:
-        action: the agent's Action dict (action_type, classification, reasoning, ...)
-
-    Returns:
-        {
-            "score": float,          # 0.0 – 1.0
-            "partial_credits": dict, # per-criterion breakdown
-            "feedback": str          # human-readable summary
-        }
-    """
-    # Must be a classify action
     if action.get("action_type") != "classify":
         return {
             "score": 0.0,
@@ -113,7 +87,6 @@ def grade_task1(action: dict) -> dict:
             "feedback": "Could not parse 'classification' field. Must be a dict or valid JSON string."
         }
 
-    # Run all 4 checks
     sev_score,  sev_msg  = _check_severity(classification)
     unex_score, unex_msg = _check_unexpected(classification)
     exp_score,  exp_msg  = _check_expedited(classification)
@@ -122,7 +95,7 @@ def grade_task1(action: dict) -> dict:
     total = round(sev_score + unex_score + exp_score + soc_score, 2)
 
     partial_credits = {
-        "severity_classification": {"score": sev_score,  "max": 0.25, "message": sev_msg},
+        "severity_classification":  {"score": sev_score,  "max": 0.25, "message": sev_msg},
         "unexpected_determination": {"score": unex_score, "max": 0.25, "message": unex_msg},
         "expedited_report_flag":    {"score": exp_score,  "max": 0.25, "message": exp_msg},
         "meddra_soc_assignment":    {"score": soc_score,  "max": 0.25, "message": soc_msg},
@@ -130,22 +103,29 @@ def grade_task1(action: dict) -> dict:
 
     correct_count = sum(1 for v in partial_credits.values() if v["score"] > 0)
     feedback = (
-        f"Task 1 grader: {correct_count}/4 criteria correct. "
-        f"Total score: {total:.2f}. "
+        f"Task 1 grader: {correct_count}/4 criteria correct. Total score: {total:.2f}. "
         + " | ".join(v["message"] for v in partial_credits.values())
     )
 
-    return {
-        "score": total,
-        "partial_credits": partial_credits,
-        "feedback": feedback
-    }
+    return {"score": total, "partial_credits": partial_credits, "feedback": feedback}
 
 
-def grade(episode, action: Action) -> tuple[float, dict, str]:
+def grade(episode, action) -> tuple[float, dict, str]:
     """
     Adapter called by environment.py on submit.
-    Signature: grade(episode, action) -> (score, partial_credits, feedback)
+    Merges action.classification (severity) + action.signal_flag into
+    the classification dict that grade_task1() expects.
     """
-    result = grade_task1(action.dict())
+    a = action.dict() if hasattr(action, "dict") else action
+    sf = a.get("signal_flag") or {}
+
+    classification = {
+        "severity":       a.get("classification", ""),
+        "unexpected":     sf.get("unexpected"),
+        "expedited_report": sf.get("expedited_report") or sf.get("expedited_reporting"),
+        "meddra_soc":     sf.get("meddra_soc"),
+    }
+
+    synthetic = {"action_type": "classify", "classification": classification}
+    result = grade_task1(synthetic)
     return result["score"], result["partial_credits"], result["feedback"]

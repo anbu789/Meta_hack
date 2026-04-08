@@ -1,0 +1,66 @@
+name: pharmavigil
+version: "1.0.0"
+description: >
+  A pharmacovigilance signal detection environment where an AI agent
+  analyzes adverse drug event reports to identify safety signals,
+  compute disproportionality statistics, and detect masking effects.
+author: "Anbuselvan Murugesan"
+tags:
+  - openenv
+  - healthcare
+  - pharmacovigilance
+  - safety
+  - nlp
+
+tasks:
+  - id: task1
+    name: "Adverse Event Severity Classification"
+    difficulty: easy
+    max_steps: 5
+    description: "Classify a single ADE report by severity and determine regulatory reporting requirements."
+
+  - id: task2
+    name: "Disproportionality Signal Detection (ROR)"
+    difficulty: medium
+    max_steps: 10
+    description: "Compute Reporting Odds Ratios across a corpus of reports and identify significant drug-event signals."
+
+  - id: task3
+    name: "Masking Effect Detection"
+    difficulty: hard
+    max_steps: 15
+    description: "Detect a hidden drug safety signal suppressed by a concomitant drug's statistical dominance."
+
+observation_space:
+  type: object
+  fields:
+    - task_id: string
+    - reports: array
+    - workspace: object
+    - step_number: integer
+
+action_space:
+  type: object
+  fields:
+    - action_type: enum[classify, flag_signal, compute_ror, identify_interaction, submit]
+    - target_report_ids: array
+    - classification: string
+    - signal_flag: object
+    - reasoning: string
+
+reward_range: [0.0, 1.0]
+
+endpoints:
+  base_url: "http://localhost:7860"
+  reset: "POST /reset"
+  step: "POST /step"
+  state: "GET /state"
+  tasks: "GET /tasks"
+  grader: "POST /grader"
+  baseline: "GET /baseline"
+  health: "GET /health"
+
+baseline_scores:
+  task1: 0.300
+  task2: 0.250
+  task3: 0.150
