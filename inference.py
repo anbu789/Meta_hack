@@ -8,17 +8,15 @@ sending context to the LLM.
 
 Env vars:
     API_BASE_URL   — HuggingFace inference endpoint base URL
-    MODEL_NAME     — Model name (default: gpt-4o)
+    MODEL_NAME     — Model name (default: meta-llama/Llama-3.3-70B-Instruct)
     HF_TOKEN       — HuggingFace token
     ENV_URL        — PharmaVigil FastAPI server (default: http://localhost:7860)
-    OPENAI_API_KEY — OpenAI key fallback
 """
 
 import os
 import json
 import time
-import logging
-from typing import Optional
+from typing import Optional, List
 
 import torch
 import torch.nn.functional as F
@@ -26,29 +24,53 @@ import requests
 from openai import OpenAI
 from transformers import AutoTokenizer, AutoModel
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
-
-API_BASE_URL = os.getenv("API_BASE_URL")
-MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4o")
+# ---------------------------------------------------------------------------
+# Env vars
+# ---------------------------------------------------------------------------
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
 API_KEY      = HF_TOKEN or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
-ENV_URL      = os.getenv("ENV_URL") or "http://localhost:7860"
+ENV_URL      = os.getenv("ENV_URL", "http://localhost:7860")
+BENCHMARK    = "pharmavigil"
 
-client_kwargs = {"api_key": API_KEY}
-if API_BASE_URL:
-    client_kwargs["base_url"] = API_BASE_URL
-client = OpenAI(**client_kwargs)
+client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
+# ---------------------------------------------------------------------------
+# Mandatory stdout log functions
+# ---------------------------------------------------------------------------
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
+
+# ---------------------------------------------------------------------------
+# PyTorch embedding model
+# ---------------------------------------------------------------------------
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 _tokenizer: Optional[AutoTokenizer] = None
-_embed_model: Optional[AutoModel]   = None
+_embed_model: Optional[AutoModel] = None
 
 
 def _load_embed_model():
     global _tokenizer, _embed_model
     if _embed_model is None:
-        log.info("Loading embedding model: %s", EMBED_MODEL_NAME)
         _tokenizer   = AutoTokenizer.from_pretrained(EMBED_MODEL_NAME)
         _embed_model = AutoModel.from_pretrained(EMBED_MODEL_NAME)
         _embed_model.eval()
@@ -59,7 +81,7 @@ def _mean_pool(token_embeddings: torch.Tensor, attention_mask: torch.Tensor) -> 
     return torch.sum(token_embeddings * mask_expanded, dim=1) / torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
 
 
-def embed_texts(texts: list[str]) -> torch.Tensor:
+def embed_texts(texts: list) -> torch.Tensor:
     _load_embed_model()
     encoded = _tokenizer(texts, padding=True, truncation=True, max_length=128, return_tensors="pt")
     with torch.no_grad():
@@ -68,7 +90,7 @@ def embed_texts(texts: list[str]) -> torch.Tensor:
     return F.normalize(embeddings, p=2, dim=1)
 
 
-def rank_reports_by_query(reports: list[dict], query: str, top_k: int = 10) -> list[dict]:
+def rank_reports_by_query(reports: list, query: str, top_k: int = 10) -> list:
     if not reports:
         return reports
     narratives  = [r.get("narrative", r.get("adverse_event", "")) for r in reports]
@@ -76,10 +98,26 @@ def rank_reports_by_query(reports: list[dict], query: str, top_k: int = 10) -> l
     report_embs = embed_texts(narratives)
     scores      = (report_embs @ query_emb.T).squeeze(1)
     top_indices = scores.argsort(descending=True)[:top_k].tolist()
-    ranked = [reports[i] for i in top_indices]
-    log.info("PyTorch ranking: selected %d/%d reports", len(ranked), len(reports))
-    return ranked
+    return [reports[i] for i in top_indices]
 
+# ---------------------------------------------------------------------------
+# Environment API
+# ---------------------------------------------------------------------------
+
+def api_reset(task_id: str) -> dict:
+    r = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def api_step(action: dict) -> dict:
+    r = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+# ---------------------------------------------------------------------------
+# LLM
+# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are a pharmacovigilance analyst (FDA/EMA/WHO standards).
 Analyze ICSRs and return a single valid JSON action object — no markdown, no prose.
@@ -100,38 +138,31 @@ TASK_HINTS = {
         "Check if the event is in the drug label (unexpected=true if absent). "
         "Flag expedited_report=true if Serious+Unexpected (15-day rule). "
         "Assign MedDRA SOC (e.g. 'Cardiac disorders'). "
-        "Step 1: action_type=classify. Step 2: action_type=submit."
+        "Step 1: action_type=classify. Step 2: action_type=submit with signal_flag containing "
+        "unexpected, expedited_report, meddra_soc keys."
     ),
     "task2": (
         "Build 2x2 contingency tables for each drug-event pair. "
-        "ROR = (a*d)/(b*c). 95% CI = exp(ln(ROR) ± 1.96*sqrt(1/a+1/b+1/c+1/d)). "
+        "ROR = (a*d)/(b*c). 95% CI = exp(ln(ROR) +/- 1.96*sqrt(1/a+1/b+1/c+1/d)). "
         "Signal threshold: ROR>2.0 AND CI_lower>1.0. "
-        "Step 1: compute_ror. Step 2: flag_signal. Step 3: submit."
+        "Step 1: compute_ror. Step 2: flag_signal with top_signal, non_signals, ranked_signals, contingency_table. Step 3: submit."
     ),
     "task3": (
         "Step 1: compute standard ROR for Azithromycin-QT prolongation (full corpus). "
         "Step 2: SEGMENT by Amiodarone co-administration. Recompute ROR in Amiodarone-ABSENT subgroup. "
-        "Step 3: flag_signal with masking_drug, masked_drug, standard_ROR, stratified_ROR, suppression_magnitude, segmented=True. "
-        "Step 4: submit with regulatory recommendation in reasoning."
+        "Step 3: flag_signal with masking_drug=Amiodarone, masked_drug=Azithromycin, standard_ROR, "
+        "stratified_ROR, suppression_magnitude, segmented=true, masking_confirmed=true. "
+        "Step 4: submit with 'stratified analysis' and 'regulatory recommendation' in reasoning."
     ),
 }
 
 
-def api_reset(task_id: str) -> dict:
-    r = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-def api_step(action: dict) -> dict:
-    r = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-def call_llm(messages: list[dict]) -> str:
+def call_llm(messages: list) -> str:
     resp = client.chat.completions.create(
         model=MODEL_NAME, messages=messages, max_tokens=1024, temperature=0.0,
     )
     return resp.choices[0].message.content.strip()
+
 
 def parse_action(text: str) -> dict:
     text = text.strip()
@@ -141,89 +172,114 @@ def parse_action(text: str) -> dict:
             text = text[4:]
     return json.loads(text.strip())
 
+# ---------------------------------------------------------------------------
+# Episode runner
+# ---------------------------------------------------------------------------
+
 def run_episode(task_id: str) -> float:
-    log.info("═══ Starting episode: %s ═══", task_id)
-    obs          = api_reset(task_id)
-    task_hint    = TASK_HINTS.get(task_id, "")
-    done         = False
-    total_reward = 0.0
-    history: list[dict] = []
+    obs       = api_reset(task_id)
+    task_hint = TASK_HINTS.get(task_id, "")
+    done      = False
+    rewards: List[float] = []
+    history: list = []
+    steps_taken = 0
+    score = 0.0
+    success = False
 
-    while not done:
-        step_num         = obs.get("step_number", 0)
-        max_steps        = obs.get("max_steps", 10)
-        reports          = obs.get("reports", [])
-        workspace        = obs.get("workspace", {})
-        task_desc        = obs.get("task_description", "")
-        query            = task_desc or task_hint
-        relevant_reports = rank_reports_by_query(reports, query, top_k=min(15, len(reports)))
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
-        user_content = (
-            f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
-            f"Description: {task_desc}\n"
-            f"Hint: {task_hint}\n\n"
-            f"Reports ({len(relevant_reports)} of {len(reports)} selected):\n"
-            f"{json.dumps(relevant_reports, indent=2)}\n\n"
-            f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
-            "Output your next action as valid JSON only."
-        )
+    try:
+        while not done:
+            step_num  = obs.get("step_number", 0)
+            max_steps = obs.get("max_steps", 10)
+            reports   = obs.get("reports", [])
+            workspace = obs.get("workspace", {})
+            task_desc = obs.get("task_description", "")
 
-        history.append({"role": "user", "content": user_content})
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+            query            = task_desc or task_hint
+            relevant_reports = rank_reports_by_query(reports, query, top_k=min(15, len(reports)))
 
-        try:
-            action_text = call_llm(messages)
-            action      = parse_action(action_text)
-        except Exception as e:
-            log.error("LLM/parse error at step %d: %s", step_num, e)
-            action = {
-                "action_type": "submit",
-                "target_report_ids": [],
-                "classification": None,
-                "signal_flag": None,
-                "reasoning": "Fallback submit due to error.",
-            }
+            user_content = (
+                f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
+                f"Description: {task_desc}\n"
+                f"Hint: {task_hint}\n\n"
+                f"Reports ({len(relevant_reports)} selected):\n"
+                f"{json.dumps(relevant_reports, indent=2)}\n\n"
+                f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
+                "Output your next action as valid JSON only."
+            )
 
-        log.info("  Step %d → action_type=%s", step_num, action.get("action_type"))
-        history.append({"role": "assistant", "content": json.dumps(action)})
+            history.append({"role": "user", "content": user_content})
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
-        try:
-            result = api_step(action)
-        except Exception as e:
-            log.error("Step API error: %s", e)
-            break
+            error = None
+            try:
+                action_text = call_llm(messages)
+                action      = parse_action(action_text)
+            except Exception as e:
+                error = str(e)
+                action = {
+                    "action_type": "submit",
+                    "target_report_ids": [],
+                    "classification": None,
+                    "signal_flag": None,
+                    "reasoning": "Fallback submit due to error.",
+                }
 
-        reward_obj   = result.get("reward", {})
-        total_reward = reward_obj.get("cumulative_reward", total_reward)
-        done         = reward_obj.get("done", False)
-        obs          = result.get("observation", obs)
+            history.append({"role": "assistant", "content": json.dumps(action)})
 
-        log.info("  → cumulative=%.3f done=%s", total_reward, done)
+            try:
+                result     = api_step(action)
+                reward_obj = result.get("reward", {})
+                step_reward = reward_obj.get("step_reward", 0.0)
+                done        = reward_obj.get("done", False)
+                score       = reward_obj.get("cumulative_reward", score)
+                obs         = result.get("observation", obs)
+            except Exception as e:
+                error = str(e)
+                done  = True
+                step_reward = 0.0
 
-        if step_num >= max_steps:
-            log.warning("Max steps reached — exiting")
-            break
-        time.sleep(0.3)
+            steps_taken = step_num + 1
+            rewards.append(step_reward)
 
-    log.info("Episode %s final score: %.3f", task_id, total_reward)
-    return total_reward
+            log_step(
+                step=steps_taken,
+                action=action.get("action_type", "unknown"),
+                reward=step_reward,
+                done=done,
+                error=error,
+            )
 
+            if step_num >= max_steps:
+                break
+            time.sleep(0.3)
+
+        success = score >= 0.1
+
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return score
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    log.info("PharmaVigil inference.py | ENV_URL=%s | MODEL=%s", ENV_URL, MODEL_NAME)
-
     scores = {}
     for task in ["task1", "task2", "task3"]:
         try:
             scores[task] = run_episode(task)
         except Exception as e:
-            log.error("Episode %s failed: %s", task, e)
+            print(f"[DEBUG] Episode {task} failed: {e}", flush=True)
+            log_end(success=False, steps=0, score=0.0, rewards=[])
             scores[task] = 0.0
 
-    print("\n" + "═" * 40)
-    print("PharmaVigil Inference Scores")
-    print("═" * 40)
+    print("\n" + "=" * 40, flush=True)
+    print("PharmaVigil Inference Scores", flush=True)
+    print("=" * 40, flush=True)
     for task, score in scores.items():
-        print(f"  {task}: {score:.3f}")
-    print(f"  average: {sum(scores.values()) / len(scores):.3f}")
-    print("═" * 40)
+        print(f"  {task}: {score:.3f}", flush=True)
+    print(f"  average: {sum(scores.values()) / len(scores):.3f}", flush=True)
+    print("=" * 40, flush=True)
