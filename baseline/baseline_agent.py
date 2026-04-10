@@ -4,7 +4,7 @@ Uses HuggingFace Inference API.
 
 Env vars:
     HF_TOKEN         — required (HuggingFace token)
-    ENV_URL           — PharmaVigil FastAPI server (default: http://localhost:7860)
+    ENV_URL          — PharmaVigil FastAPI server (default: http://localhost:7860)
 """
 
 import os
@@ -18,15 +18,12 @@ from openai import OpenAI
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-ENV_URL = os.getenv("ENV_URL") or "http://localhost:7860"
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+ENV_URL      = os.getenv("ENV_URL") or "http://localhost:7860"
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
+MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 
-client = OpenAI(
-    api_key=API_KEY,
-    base_url=API_BASE_URL,
-)
+client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
 
 SYSTEM_PROMPT = """You are a pharmacovigilance analyst with expertise in
 FDA/EMA/WHO adverse event reporting, MedDRA terminology, and disproportionality
@@ -55,7 +52,7 @@ TASK_HINTS = {
     ),
     "task2": (
         "Build 2x2 contingency tables for every drug-event pair. "
-        "ROR = (a*d)/(b*c). 95% CI = exp(ln(ROR) ± 1.96*sqrt(1/a+1/b+1/c+1/d)). "
+        "ROR = (a*d)/(b*c). 95% CI = exp(ln(ROR) +/- 1.96*sqrt(1/a+1/b+1/c+1/d)). "
         "Haldane correction: add 0.5 to all cells if any cell is 0. "
         "Signal threshold: ROR > 2.0 AND CI_lower > 1.0. "
         "Step 1: compute_ror. Step 2: flag_signal with top_signal + non_signals + ranked_signals. "
@@ -84,11 +81,15 @@ def api_step(action: dict) -> dict:
     return r.json()
 
 
-def call_llm(history: list[dict]) -> str:
+def call_llm(user_content: str) -> str:
+    """Fresh prompt each step — no history accumulation to stay within context window."""
     response = client.chat.completions.create(
         model=MODEL_NAME,
         max_tokens=1024,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
     )
     return response.choices[0].message.content.strip()
 
@@ -108,7 +109,6 @@ def run_episode(task_id: str) -> float:
     task_hint    = TASK_HINTS.get(task_id, "")
     done         = False
     total_reward = 0.0
-    history: list[dict] = []
 
     while not done:
         step_num  = obs.get("step_number", 0)
@@ -117,19 +117,21 @@ def run_episode(task_id: str) -> float:
         workspace = obs.get("workspace", {})
         task_desc = obs.get("task_description", "")
 
+        # Limit reports to 5 to stay within 8B context window
+        reports_truncated = reports[:5]
+
         user_content = (
             f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
             f"Description: {task_desc}\n"
             f"Hint: {task_hint}\n\n"
-            f"Reports:\n{json.dumps(reports, indent=2)}\n\n"
+            f"Reports (showing {len(reports_truncated)} of {len(reports)}):\n"
+            f"{json.dumps(reports_truncated, indent=2)}\n\n"
             f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
             "Output your next action as valid JSON only."
         )
 
-        history.append({"role": "user", "content": user_content})
-
         try:
-            action_text = call_llm(history)
+            action_text = call_llm(user_content)
             action      = parse_action(action_text)
         except Exception as e:
             log.error("LLM/parse error at step %d: %s", step_num, e)
@@ -142,7 +144,6 @@ def run_episode(task_id: str) -> float:
             }
 
         log.info("  Step %d → action_type=%s", step_num, action.get("action_type"))
-        history.append({"role": "assistant", "content": json.dumps(action)})
 
         try:
             result = api_step(action)
