@@ -8,7 +8,7 @@ sending context to the LLM.
 
 Env vars:
     API_BASE_URL   — HuggingFace inference endpoint base URL
-    MODEL_NAME     — Model name (default: meta-llama/Llama-3.3-70B-Instruct)
+    MODEL_NAME     — Model name (default: meta-llama/Llama-3.1-8B-Instruct)
     HF_TOKEN       — HuggingFace token
     ENV_URL        — PharmaVigil FastAPI server (default: http://localhost:7860)
 """
@@ -28,7 +28,7 @@ from transformers import AutoTokenizer, AutoModel
 # Env vars
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
+MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
 API_KEY      = HF_TOKEN or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
 ENV_URL      = os.getenv("ENV_URL", "http://localhost:7860")
