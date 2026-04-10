@@ -197,7 +197,7 @@ def run_episode(task_id: str) -> float:
             task_desc = obs.get("task_description", "")
 
             query            = task_desc or task_hint
-            relevant_reports = rank_reports_by_query(reports, query, top_k=min(15, len(reports)))
+            relevant_reports = rank_reports_by_query(reports, query, top_k=min(5, len(reports)))
 
             user_content = (
                 f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
