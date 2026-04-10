@@ -86,7 +86,7 @@ class EpisodeState:
         self.done: bool = False
         self.cumulative_reward: float = 0.0
         self.workspace: dict = {}
-        self.action_history: list[dict] = []  # for circular reasoning detection
+        self.action_history: list[dict] = []
 
     def to_observation(self) -> Observation:
         return Observation(
@@ -110,16 +110,15 @@ class EpisodeState:
 
     def is_circular(self, action_type: str, reasoning: str) -> bool:
         """
-        Detects if the agent is repeating the exact same action type
-        and reasoning back-to-back (circular reasoning penalty).
+        Detects if the agent is stuck in a loop — same action_type used
+        3 times in a row (current + last 2 in history), regardless of
+        reasoning text. This catches 8B models that vary wording slightly
+        but repeat the same action indefinitely.
         """
-        if len(self.action_history) < 1:
+        if len(self.action_history) < 2:
             return False
-        last = self.action_history[-1]
-        return (
-            last["action_type"] == action_type
-            and last["reasoning"].strip() == reasoning.strip()
-        )
+        last_two = self.action_history[-2:]
+        return all(h["action_type"] == action_type for h in last_two)
 
 
 # ---------------------------------------------------------------------------
