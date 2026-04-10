@@ -14,6 +14,9 @@ TASK_STAGE_MAP = {
     "task3": {1: "compute_ror", 2: "compute_ror", 3: "flag_signal", 4: "submit"},
 }
 
+# Hard cap so cumulative reward never exceeds 1.0
+MAX_CUMULATIVE_REWARD = 0.99
+
 
 def _check_action_type(task_id: str, step_number: int, action_type: str) -> tuple:
     stage_map = TASK_STAGE_MAP.get(task_id, {})
@@ -43,7 +46,6 @@ def _check_report_ids(target_report_ids: list, valid_ids: set) -> tuple:
 
 
 def _check_intermediate_output(action) -> tuple:
-    # action may be an Action model or a dict
     action_type = action.action_type if hasattr(action, "action_type") else action.get("action_type", "")
 
     if action_type == "submit":
@@ -101,11 +103,28 @@ def shape_reward(task_id: str, step_number: int, action, valid_report_ids: set) 
 class RewardShaper:
     """No-arg constructor. Called by environment.py as RewardShaper()"""
 
+    def __init__(self):
+        self._cumulative = 0.0
+
+    def reset(self):
+        self._cumulative = 0.0
+
     def compute(self, action, episode) -> tuple:
         """
         Called by environment.py as:
             self._shaper.compute(action=action, episode=episode)
+        Returns (step_reward, partial_credits, feedback) with cumulative capped at MAX_CUMULATIVE_REWARD.
         """
         valid_ids = {r["report_id"] if isinstance(r, dict) else r.report_id
                      for r in episode.reports}
-        return shape_reward(episode.task_id, episode.step_number, action, valid_ids)
+        step_reward, credits, feedback = shape_reward(
+            episode.task_id, episode.step_number, action, valid_ids
+        )
+
+        # Cap so cumulative never exceeds MAX_CUMULATIVE_REWARD
+        self._cumulative += step_reward
+        if self._cumulative > MAX_CUMULATIVE_REWARD:
+            step_reward = max(0.0, step_reward - (self._cumulative - MAX_CUMULATIVE_REWARD))
+            self._cumulative = MAX_CUMULATIVE_REWARD
+
+        return round(step_reward, 4), credits, feedback

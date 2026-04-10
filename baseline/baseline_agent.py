@@ -8,6 +8,7 @@ Env vars:
 """
 
 import os
+import re
 import json
 import time
 import logging
@@ -30,7 +31,7 @@ FDA/EMA/WHO adverse event reporting, MedDRA terminology, and disproportionality
 statistics (ROR, signal detection, masking effects).
 
 Always respond with a single valid JSON action object and nothing else.
-No markdown, no explanation outside the JSON.
+No markdown, no explanation outside the JSON. No comments inside JSON.
 
 Action schema:
 {
@@ -100,7 +101,19 @@ def parse_action(text: str) -> dict:
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
+    # Strip // comments that 8B model sometimes adds inside JSON
+    text = re.sub(r'//[^\n]*', '', text)
     return json.loads(text.strip())
+
+
+def force_submit() -> dict:
+    return {
+        "action_type": "submit",
+        "target_report_ids": [],
+        "classification": None,
+        "signal_flag": None,
+        "reasoning": "Force submit at max steps.",
+    }
 
 
 def run_episode(task_id: str) -> float:
@@ -117,31 +130,29 @@ def run_episode(task_id: str) -> float:
         workspace = obs.get("workspace", {})
         task_desc = obs.get("task_description", "")
 
-        # Limit reports to 5 to stay within 8B context window
-        reports_truncated = reports[:5]
+        # Force submit on last step to prevent looping past max_steps
+        if step_num >= max_steps - 1:
+            action = force_submit()
+        else:
+            # Limit reports to 5 to stay within 8B context window
+            reports_truncated = reports[:5]
 
-        user_content = (
-            f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
-            f"Description: {task_desc}\n"
-            f"Hint: {task_hint}\n\n"
-            f"Reports (showing {len(reports_truncated)} of {len(reports)}):\n"
-            f"{json.dumps(reports_truncated, indent=2)}\n\n"
-            f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
-            "Output your next action as valid JSON only."
-        )
+            user_content = (
+                f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
+                f"Description: {task_desc}\n"
+                f"Hint: {task_hint}\n\n"
+                f"Reports (showing {len(reports_truncated)} of {len(reports)}):\n"
+                f"{json.dumps(reports_truncated, indent=2)}\n\n"
+                f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
+                "Output your next action as valid JSON only. No comments inside JSON."
+            )
 
-        try:
-            action_text = call_llm(user_content)
-            action      = parse_action(action_text)
-        except Exception as e:
-            log.error("LLM/parse error at step %d: %s", step_num, e)
-            action = {
-                "action_type": "submit",
-                "target_report_ids": [],
-                "classification": None,
-                "signal_flag": None,
-                "reasoning": "Fallback submit due to error.",
-            }
+            try:
+                action_text = call_llm(user_content)
+                action      = parse_action(action_text)
+            except Exception as e:
+                log.error("LLM/parse error at step %d: %s", step_num, e)
+                action = force_submit()
 
         log.info("  Step %d → action_type=%s", step_num, action.get("action_type"))
 
