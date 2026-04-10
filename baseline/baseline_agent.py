@@ -31,7 +31,7 @@ FDA/EMA/WHO adverse event reporting, MedDRA terminology, and disproportionality
 statistics (ROR, signal detection, masking effects).
 
 Always respond with a single valid JSON action object and nothing else.
-No markdown, no explanation outside the JSON. No comments inside JSON.
+No markdown, no explanation outside the JSON. No comments inside JSON. No trailing commas.
 
 Action schema:
 {
@@ -101,8 +101,12 @@ def parse_action(text: str) -> dict:
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
-    # Strip // comments that 8B model sometimes adds inside JSON
+    # Strip // comments
     text = re.sub(r'//[^\n]*', '', text)
+    # Remove trailing commas before } or ]
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    # Remove control characters that break JSON parsing
+    text = re.sub(r'[\x00-\x1f\x7f]', ' ', text)
     return json.loads(text.strip())
 
 
@@ -144,7 +148,7 @@ def run_episode(task_id: str) -> float:
                 f"Reports (showing {len(reports_truncated)} of {len(reports)}):\n"
                 f"{json.dumps(reports_truncated, indent=2)}\n\n"
                 f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
-                "Output your next action as valid JSON only. No comments inside JSON."
+                "Output your next action as valid JSON only. No comments. No trailing commas."
             )
 
             try:
@@ -172,7 +176,9 @@ def run_episode(task_id: str) -> float:
         if step_num >= max_steps:
             log.warning("Max steps reached — exiting")
             break
-        time.sleep(0.3)
+
+        # 1.0s sleep to avoid HF router rate limiting on free tier
+        time.sleep(1.0)
 
     log.info("Episode %s final score: %.3f", task_id, total_reward)
     return total_reward
