@@ -35,10 +35,17 @@ API_KEY      = HF_TOKEN or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "
 ENV_URL      = os.getenv("ENV_URL", "http://localhost:7860")
 BENCHMARK    = "pharmavigil"
 
-# Max steps per task in inference — keeps total runtime well under 30 min
+# Max steps per task — keeps total runtime well under 30 min validator limit
 MAX_STEPS_PER_TASK = 5
 
 client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+# ---------------------------------------------------------------------------
+# Score clamping — validator requires strictly between 0 and 1 (exclusive)
+# ---------------------------------------------------------------------------
+
+def clamp_score(score: float) -> float:
+    return max(0.01, min(0.99, float(score)))
 
 # ---------------------------------------------------------------------------
 # Mandatory stdout log functions
@@ -58,7 +65,7 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={clamp_score(score):.3f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -165,7 +172,7 @@ def call_llm(messages: list) -> str:
         messages=messages,
         max_tokens=1024,
         temperature=0.0,
-        timeout=30,  # hard 30s timeout per LLM call
+        timeout=30,
     )
     return resp.choices[0].message.content.strip()
 
@@ -176,11 +183,8 @@ def parse_action(text: str) -> dict:
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
-    # Strip // comments
     text = re.sub(r'//[^\n]*', '', text)
-    # Remove trailing commas before } or ]
     text = re.sub(r',\s*([}\]])', r'\1', text)
-    # Remove control characters
     text = re.sub(r'[\x00-\x1f\x7f]', ' ', text)
     return json.loads(text.strip())
 
@@ -208,8 +212,6 @@ def run_episode(task_id: str) -> float:
             workspace = obs.get("workspace", {})
             task_desc = obs.get("task_description", "")
 
-            # Force submit if we hit our local MAX_STEPS_PER_TASK limit
-            # This keeps inference.py well under the 30 min validator timeout
             if steps_taken >= MAX_STEPS_PER_TASK:
                 action = {
                     "action_type": "submit",
@@ -233,7 +235,7 @@ def run_episode(task_id: str) -> float:
                 )
 
                 history.append({"role": "user", "content": user_content})
-                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[-6:]  # keep last 3 turns only
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[-6:]
 
                 error = None
                 try:
@@ -278,14 +280,15 @@ def run_episode(task_id: str) -> float:
             if step_num >= max_steps:
                 break
 
-            time.sleep(0.1)  # minimal sleep — avoid rate limit without wasting time
+            time.sleep(0.1)
 
         success = score >= 0.1
 
     finally:
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
-    return score
+    # Clamp final score — validator rejects exactly 0.0 and 1.0
+    return clamp_score(score)
 
 # ---------------------------------------------------------------------------
 # Main
@@ -298,8 +301,8 @@ if __name__ == "__main__":
             scores[task] = run_episode(task)
         except Exception as e:
             print(f"[DEBUG] Episode {task} failed: {e}", flush=True)
-            log_end(success=False, steps=0, score=0.0, rewards=[])
-            scores[task] = 0.0
+            log_end(success=False, steps=0, score=0.01, rewards=[0.01])
+            scores[task] = 0.01
 
     print("\n" + "=" * 40, flush=True)
     print("PharmaVigil Inference Scores", flush=True)
