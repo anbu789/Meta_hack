@@ -8,12 +8,13 @@ sending context to the LLM.
 
 Env vars:
     API_BASE_URL   — HuggingFace inference endpoint base URL
-    MODEL_NAME     — Model name (default: meta-llama/Llama-3.1-8B-Instruct)
+    MODEL_NAME     — Model name (default: Qwen/Qwen2.5-7B-Instruct)
     HF_TOKEN       — HuggingFace token
     ENV_URL        — PharmaVigil FastAPI server (default: http://localhost:7860)
 """
 
 import os
+import re
 import json
 import time
 from typing import Optional, List
@@ -28,11 +29,14 @@ from transformers import AutoTokenizer, AutoModel
 # Env vars
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
 API_KEY      = HF_TOKEN or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
 ENV_URL      = os.getenv("ENV_URL", "http://localhost:7860")
 BENCHMARK    = "pharmavigil"
+
+# Max steps per task in inference — keeps total runtime well under 30 min
+MAX_STEPS_PER_TASK = 5
 
 client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
@@ -45,10 +49,8 @@ def log_start(task: str, env: str, model: str) -> None:
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = error if error else "null"
-    done_val = str(done).lower()
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error or 'null'}",
         flush=True,
     )
 
@@ -90,7 +92,7 @@ def embed_texts(texts: list) -> torch.Tensor:
     return F.normalize(embeddings, p=2, dim=1)
 
 
-def rank_reports_by_query(reports: list, query: str, top_k: int = 10) -> list:
+def rank_reports_by_query(reports: list, query: str, top_k: int = 5) -> list:
     if not reports:
         return reports
     narratives  = [r.get("narrative", r.get("adverse_event", "")) for r in reports]
@@ -120,7 +122,7 @@ def api_step(action: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are a pharmacovigilance analyst (FDA/EMA/WHO standards).
-Analyze ICSRs and return a single valid JSON action object — no markdown, no prose.
+Analyze ICSRs and return a single valid JSON action object — no markdown, no prose, no comments, no trailing commas.
 
 Action schema:
 {
@@ -159,7 +161,11 @@ TASK_HINTS = {
 
 def call_llm(messages: list) -> str:
     resp = client.chat.completions.create(
-        model=MODEL_NAME, messages=messages, max_tokens=1024, temperature=0.0,
+        model=MODEL_NAME,
+        messages=messages,
+        max_tokens=1024,
+        temperature=0.0,
+        timeout=30,  # hard 30s timeout per LLM call
     )
     return resp.choices[0].message.content.strip()
 
@@ -170,6 +176,12 @@ def parse_action(text: str) -> dict:
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
+    # Strip // comments
+    text = re.sub(r'//[^\n]*', '', text)
+    # Remove trailing commas before } or ]
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    # Remove control characters
+    text = re.sub(r'[\x00-\x1f\x7f]', ' ', text)
     return json.loads(text.strip())
 
 # ---------------------------------------------------------------------------
@@ -177,14 +189,14 @@ def parse_action(text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def run_episode(task_id: str) -> float:
-    obs       = api_reset(task_id)
-    task_hint = TASK_HINTS.get(task_id, "")
-    done      = False
+    obs         = api_reset(task_id)
+    task_hint   = TASK_HINTS.get(task_id, "")
+    done        = False
     rewards: List[float] = []
     history: list = []
     steps_taken = 0
-    score = 0.0
-    success = False
+    score       = 0.0
+    success     = False
 
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
@@ -196,41 +208,53 @@ def run_episode(task_id: str) -> float:
             workspace = obs.get("workspace", {})
             task_desc = obs.get("task_description", "")
 
-            query            = task_desc or task_hint
-            relevant_reports = rank_reports_by_query(reports, query, top_k=min(5, len(reports)))
-
-            user_content = (
-                f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
-                f"Description: {task_desc}\n"
-                f"Hint: {task_hint}\n\n"
-                f"Reports ({len(relevant_reports)} selected):\n"
-                f"{json.dumps(relevant_reports, indent=2)}\n\n"
-                f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
-                "Output your next action as valid JSON only."
-            )
-
-            history.append({"role": "user", "content": user_content})
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-
-            error = None
-            try:
-                action_text = call_llm(messages)
-                action      = parse_action(action_text)
-            except Exception as e:
-                error = str(e)
+            # Force submit if we hit our local MAX_STEPS_PER_TASK limit
+            # This keeps inference.py well under the 30 min validator timeout
+            if steps_taken >= MAX_STEPS_PER_TASK:
                 action = {
                     "action_type": "submit",
                     "target_report_ids": [],
                     "classification": None,
                     "signal_flag": None,
-                    "reasoning": "Fallback submit due to error.",
+                    "reasoning": "Force submit to stay within time limit.",
                 }
+            else:
+                query            = task_desc or task_hint
+                relevant_reports = rank_reports_by_query(reports, query, top_k=min(5, len(reports)))
 
-            history.append({"role": "assistant", "content": json.dumps(action)})
+                user_content = (
+                    f"Task: {task_id.upper()} | Step {step_num}/{max_steps}\n"
+                    f"Description: {task_desc}\n"
+                    f"Hint: {task_hint}\n\n"
+                    f"Reports ({len(relevant_reports)} selected):\n"
+                    f"{json.dumps(relevant_reports, indent=2)}\n\n"
+                    f"Workspace: {json.dumps(workspace, indent=2)}\n\n"
+                    "Output your next action as valid JSON only. No comments. No trailing commas."
+                )
 
+                history.append({"role": "user", "content": user_content})
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[-6:]  # keep last 3 turns only
+
+                error = None
+                try:
+                    action_text = call_llm(messages)
+                    action      = parse_action(action_text)
+                except Exception as e:
+                    error = str(e)
+                    action = {
+                        "action_type": "submit",
+                        "target_report_ids": [],
+                        "classification": None,
+                        "signal_flag": None,
+                        "reasoning": "Fallback submit due to error.",
+                    }
+
+                history.append({"role": "assistant", "content": json.dumps(action)})
+
+            error = None
             try:
-                result     = api_step(action)
-                reward_obj = result.get("reward", {})
+                result      = api_step(action)
+                reward_obj  = result.get("reward", {})
                 step_reward = reward_obj.get("step_reward", 0.0)
                 done        = reward_obj.get("done", False)
                 score       = reward_obj.get("cumulative_reward", score)
@@ -240,7 +264,7 @@ def run_episode(task_id: str) -> float:
                 done  = True
                 step_reward = 0.0
 
-            steps_taken = step_num + 1
+            steps_taken += 1
             rewards.append(step_reward)
 
             log_step(
@@ -253,7 +277,8 @@ def run_episode(task_id: str) -> float:
 
             if step_num >= max_steps:
                 break
-            time.sleep(0.3)
+
+            time.sleep(0.1)  # minimal sleep — avoid rate limit without wasting time
 
         success = score >= 0.1
 
