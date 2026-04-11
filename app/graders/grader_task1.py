@@ -10,6 +10,16 @@ GROUND_TRUTH = {
 
 MEDDRA_SOC_ALIASES = ["cardiac disorders", "cardiac disorder"]
 
+# Partial credit weights — max possible score is 0.95 (not 1.0)
+# This ensures no agent can achieve a perfect score, which the
+# validator rejects. Weights sum to 0.95.
+WEIGHTS = {
+    "severity":   0.25,
+    "unexpected": 0.25,
+    "expedited":  0.25,
+    "meddra_soc": 0.20,
+}
+
 
 def _parse_classification(action: dict) -> dict | None:
     raw = action.get("classification")
@@ -29,7 +39,7 @@ def _check_severity(classification: dict) -> tuple[float, str]:
     agent_val = str(classification.get("severity", "")).strip()
     expected = GROUND_TRUTH["correct_severity"]
     if agent_val.lower() == expected.lower():
-        return 0.25, f"Severity correct: '{agent_val}'"
+        return WEIGHTS["severity"], f"Severity correct: '{agent_val}'"
     return 0.0, f"Severity incorrect: got '{agent_val}', expected '{expected}'"
 
 
@@ -43,7 +53,7 @@ def _check_unexpected(classification: dict) -> tuple[float, str]:
         return 0.0, f"Unexpected field missing or unparseable: got '{raw}'"
     expected = GROUND_TRUTH["correct_unexpected"]
     if agent_val == expected:
-        return 0.25, f"Unexpected classification correct: {agent_val}"
+        return WEIGHTS["unexpected"], f"Unexpected classification correct: {agent_val}"
     return 0.0, f"Unexpected classification incorrect: got '{agent_val}', expected '{expected}'"
 
 
@@ -57,14 +67,14 @@ def _check_expedited(classification: dict) -> tuple[float, str]:
         return 0.0, f"Expedited report field missing or unparseable: got '{raw}'"
     expected = GROUND_TRUTH["correct_expedited_flag"]
     if agent_val == expected:
-        return 0.25, f"Expedited report flag correct: {agent_val}"
+        return WEIGHTS["expedited"], f"Expedited report flag correct: {agent_val}"
     return 0.0, f"Expedited report flag incorrect: got '{agent_val}', expected '{expected}'"
 
 
 def _check_meddra_soc(classification: dict) -> tuple[float, str]:
     agent_val = str(classification.get("meddra_soc", "")).strip().lower()
     if agent_val in MEDDRA_SOC_ALIASES:
-        return 0.25, f"MedDRA SOC correct: '{classification.get('meddra_soc')}'"
+        return WEIGHTS["meddra_soc"], f"MedDRA SOC correct: '{classification.get('meddra_soc')}'"
     return 0.0, (
         f"MedDRA SOC incorrect: got '{classification.get('meddra_soc')}', "
         f"expected '{GROUND_TRUTH['correct_meddra_soc']}'"
@@ -95,10 +105,10 @@ def grade_task1(action: dict) -> dict:
     total = round(sev_score + unex_score + exp_score + soc_score, 2)
 
     partial_credits = {
-        "severity_classification":  {"score": sev_score,  "max": 0.25, "message": sev_msg},
-        "unexpected_determination": {"score": unex_score, "max": 0.25, "message": unex_msg},
-        "expedited_report_flag":    {"score": exp_score,  "max": 0.25, "message": exp_msg},
-        "meddra_soc_assignment":    {"score": soc_score,  "max": 0.25, "message": soc_msg},
+        "severity_classification":  {"score": sev_score,  "max": WEIGHTS["severity"],   "message": sev_msg},
+        "unexpected_determination": {"score": unex_score, "max": WEIGHTS["unexpected"], "message": unex_msg},
+        "expedited_report_flag":    {"score": exp_score,  "max": WEIGHTS["expedited"],  "message": exp_msg},
+        "meddra_soc_assignment":    {"score": soc_score,  "max": WEIGHTS["meddra_soc"], "message": soc_msg},
     }
 
     correct_count = sum(1 for v in partial_credits.values() if v["score"] > 0)
@@ -120,10 +130,10 @@ def grade(episode, action) -> tuple[float, dict, str]:
     sf = a.get("signal_flag") or {}
 
     classification = {
-        "severity":       a.get("classification", ""),
-        "unexpected":     sf.get("unexpected"),
+        "severity":         a.get("classification", ""),
+        "unexpected":       sf.get("unexpected"),
         "expedited_report": sf.get("expedited_report") or sf.get("expedited_reporting"),
-        "meddra_soc":     sf.get("meddra_soc"),
+        "meddra_soc":       sf.get("meddra_soc"),
     }
 
     synthetic = {"action_type": "classify", "classification": classification}
